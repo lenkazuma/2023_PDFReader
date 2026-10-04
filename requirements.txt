@@ -1,4 +1,4 @@
-streamlit>=1.31
+streamlit>=1.50
 python-dotenv
 langchain-core>=0.3.40
 langchain-openai>=0.3
