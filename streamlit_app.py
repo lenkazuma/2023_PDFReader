@@ -1,189 +1,138 @@
-from dotenv import load_dotenv
-from langchain.vectorstores import Chroma
+import os
+
 import streamlit as st
-from PyPDF2 import PdfReader
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.chains.question_answering import load_qa_chain
-from langchain.chains.summarize import load_summarize_chain
-from langchain.llms import OpenAI
-from langchain.callbacks import get_openai_callback
-from docx import Document
-from docx.table import _Cell
-from streamlit_extras.add_vertical_space import add_vertical_space
-import sys
+from dotenv import load_dotenv
+from langchain_core.callbacks import get_usage_metadata_callback
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
+from reader_core import (
+    EmptyDocumentError,
+    answer_question,
+    build_index,
+    extract_documents,
+    file_fingerprint,
+    split_documents,
+    summarize,
+)
 
-def clear_history():
-    if "history" in st.session_state:
-        del st.session_state["history"]
+MODELS = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"]
+EMBEDDING_MODEL = "text-embedding-3-small"
 
-def format_chat_history(chat_history):
-    formatted_history = ""
-    for entry in chat_history:
-        question, answer = entry
-        # Added an extra '\n' for the blank line
-        formatted_history += f"Question: {question}\nAnswer: {answer}\n\n"
-    return formatted_history
-
-
-def extract_text_from_table(table):
-    text = ""
-    for row in table.rows:
-        for cell in row.cells:
-            if isinstance(cell, _Cell):
-                text += cell.text + "\n"
-    return text.strip()
-#side bar contents
-
-# Configure Streamlit page settings
-st.set_page_config(page_title="PDFReader")
+load_dotenv()
+st.set_page_config(page_title="PDFReader", page_icon="📄")
 st.title("PDF & Word Reader ✨")
-    
 
-def main():
-    if "model" not in st.session_state:
-        st.session_state.model = "text-davinci-003"
-    # brief summary
-    with st.sidebar:
-        st.title('🤗💬 LLM PDFReader App')
-        st.markdown("""
+
+def default_api_key() -> str:
+    try:
+        return st.secrets.get("OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+    except FileNotFoundError:
+        return os.getenv("OPENAI_API_KEY", "")
+
+
+def record_usage(cb) -> None:
+    usage = st.session_state.setdefault("usage", {"input": 0, "output": 0})
+    for model_usage in cb.usage_metadata.values():
+        usage["input"] += model_usage.get("input_tokens", 0)
+        usage["output"] += model_usage.get("output_tokens", 0)
+
+
+with st.sidebar:
+    st.title("🤗💬 LLM PDFReader App")
+    api_key = st.text_input(
+        "OpenAI API key",
+        type="password",
+        value=default_api_key(),
+        help="Only kept in this browser session. Get one at https://platform.openai.com/api-keys",
+    )
+    model = st.selectbox("Model 👉", MODELS)
+    with st.expander("Advanced"):
+        chunk_size = st.slider("Chunk size", 300, 3000, 1000, step=100)
+        top_k = st.slider("Excerpts per answer", 2, 10, 4)
+    usage = st.session_state.get("usage")
+    if usage:
+        st.caption(f"Chat tokens this session: {usage['input']:,} in / {usage['output']:,} out")
+    st.markdown(
+        """
         ## About
-        This app is an LLM-powered chatbot built using:
-        - [Streamlit](https://streamlit.io/)
-        - [Langchain](https://python.langchian.com/)
-        - [OpenAI](https://platform.openai.com/docs/models) LLM model        
-        """)
-        st.radio(
-        "Model 👉",
-        key="model",
-        options=["text-ada-001", "text-davinci-002", "text-davinci-003"],
-        )
-        add_vertical_space(5)
+        Built with [Streamlit](https://streamlit.io/), [LangChain](https://python.langchain.com/)
+        and [OpenAI](https://platform.openai.com/docs/models).
+        """
+    )
 
+uploaded_file = st.file_uploader("Upload your file", type=["pdf", "docx"])
 
+if uploaded_file is None:
+    st.info("Upload a PDF or Word document to get a summary and ask questions about it.")
+    st.stop()
 
+if not api_key:
+    st.warning("Enter your OpenAI API key in the sidebar to continue.")
+    st.stop()
 
-    llm = OpenAI(temperature=0.7, model=st.session_state.model)
-    #llmchat = OpenAI(temperature=0.7, model_name='gpt-3.5-turbo')
-    chain = load_summarize_chain(llm, chain_type="stuff")
-    chain_large = load_summarize_chain(llm, chain_type="map_reduce")
-    chain_qa = load_qa_chain(llm, chain_type="stuff")
-    chain_large_qa = load_qa_chain(llm, chain_type="map_reduce")
+data = uploaded_file.getvalue()
+doc_key = f"{file_fingerprint(data)}:{chunk_size}"
 
-   # Load environment variables 
-    load_dotenv()
+if st.session_state.get("doc_key") != doc_key:
+    try:
+        with st.spinner("Reading and indexing the document..."):
+            docs = extract_documents(data, uploaded_file.type, uploaded_file.name)
+            chunks = split_documents(docs, chunk_size=chunk_size, chunk_overlap=min(200, chunk_size // 5))
+            index = build_index(chunks, OpenAIEmbeddings(model=EMBEDDING_MODEL, api_key=api_key))
+    except EmptyDocumentError as exc:
+        st.error(str(exc))
+        st.stop()
+    except Exception as exc:
+        st.error(f"Could not process the file: {exc}")
+        st.stop()
+    st.session_state.update(doc_key=doc_key, chunks=chunks, index=index, summary=None, history=[])
 
+llm = ChatOpenAI(model=model, temperature=0.3, api_key=api_key)
 
-    # Upload file
-    uploaded_file  = st.file_uploader("Upload your file", type=["pdf", "docx"])
+st.header("Here's a brief summary of your file:")
+if st.session_state.summary is None:
+    try:
+        with st.spinner("Summarising..."), get_usage_metadata_callback() as cb:
+            st.session_state.summary = summarize(st.session_state.chunks, llm)
+        record_usage(cb)
+    except Exception as exc:
+        st.error(f"Summary failed: {exc}")
+st.write(st.session_state.summary or "")
 
-    # Initialize session state
-    if 'pdf_name' not in st.session_state:
-        st.session_state.pdf_name = None
+for turn in st.session_state.history:
+    with st.chat_message("user"):
+        st.markdown(turn["question"])
+    with st.chat_message("assistant"):
+        st.markdown(turn["answer"])
+        st.caption("Sources: " + ", ".join(f"p. {page}" for page in turn["pages"]))
 
-    # Extract the text
-    if uploaded_file  is not None :
-        file_type = uploaded_file.type
-
-        # Clear summary if a new file is uploaded
-        if 'summary' in st.session_state and st.session_state.file_name != uploaded_file.name:
-            st.session_state.summary = None
-
-        st.session_state.file_name = uploaded_file.name
-
+question = st.chat_input("Ask a question about your file")
+if question:
+    with st.chat_message("user"):
+        st.markdown(question)
+    with st.chat_message("assistant"):
         try:
-            if file_type == "application/pdf":
-                # Handle PDF files
-                pdf_reader = PdfReader(uploaded_file)
-                text = ""
-                for page in pdf_reader.pages:
-                    text += page.extract_text()
+            with st.spinner("Thinking..."), get_usage_metadata_callback() as cb:
+                result = answer_question(
+                    question,
+                    st.session_state.index,
+                    llm,
+                    history=[(t["question"], t["answer"]) for t in st.session_state.history],
+                    k=top_k,
+                )
+            record_usage(cb)
+        except Exception as exc:
+            st.error(f"An error occurred: {exc}")
+            st.stop()
+        pages = sorted({doc.metadata.get("page", "?") for doc in result.sources}, key=str)
+        st.markdown(result.text)
+        st.caption("Sources: " + ", ".join(f"p. {page}" for page in pages))
+        with st.expander("Show excerpts"):
+            for doc in result.sources:
+                st.markdown(f"**p. {doc.metadata.get('page', '?')}**")
+                st.text(doc.page_content)
+    st.session_state.history.append({"question": question, "answer": result.text, "pages": pages})
 
-            elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                # Handle Word documents
-                doc = Document(uploaded_file)
-                paragraphs = [p.text for p in doc.paragraphs]
-                text = "\n".join(paragraphs)
-
-                # Extract text from tables
-                for table in doc.tables:
-                    table_text = extract_text_from_table(table)
-                    if table_text:
-                        text += "\n" + table_text
-
-            else:
-                st.error("Unsupported file format. Please upload a PDF or DOCX file.")
-                return
-
-            # Split text into chunks, use this if you only use this app for small documents.
-            # text_splitter = CharacterTextSplitter(
-            #     separator="\n",
-            #     chunk_size=1000,
-            #     chunk_overlap=200,
-            #     length_function=len
-            # )
-
-            # Split text into chunks
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200,
-                length_function=len
-            )
-            chunks = text_splitter.split_text(text)
-
-
-            # Create embeddings
-            embeddings = OpenAIEmbeddings(disallowed_special=())
-            knowledge_base = FAISS.from_texts(chunks, embeddings)
-
-
-            st.header("Here's a brief summary of your file:")
-            pdf_summary = "Give me a concise summary, use the language that the file is in. "
-
-            docs = knowledge_base.similarity_search(pdf_summary)
-            
-            
-            if 'summary' not in st.session_state or st.session_state.summary is None:
-              with st.spinner('Wait for it...'):
-                    with get_openai_callback() as scb:
-                        try:
-                            st.session_state.summary = chain.run(input_documents=docs, question=pdf_summary)    
-                        except Exception as maxtoken_error:
-                            # Fallback to the larger model if the context length is exceeded
-                            print(maxtoken_error)
-                            st.session_state.summary = chain_large.run(input_documents=docs, question=pdf_summary)
-                        print(scb)    
-                            
-            st.write(st.session_state.summary)
-
-
-            # User input for questions
-            user_question = st.text_input("Ask a question about your file:")
-            if user_question:
-                docs = knowledge_base.similarity_search(user_question)
-                with st.spinner('Wait for it...'):
-                  with get_openai_callback() as cb:
-                    try:
-                        response = chain_qa.run(input_documents=docs, question=user_question)
-                    except Exception as maxtoken_error:
-                        print(maxtoken_error)
-                        response = chain_large_qa.run(input_documents=docs, question=user_question) 
-                    print(cb)
-                    # Show/hide section using st.beta_expander
-                    #with st.expander("Used Tokens", expanded=False):
-                       #st.write(cb)
-                st.write(response)
-                
-        except IndexError:
-            #st.caption("Well, Seems like your PDF doesn't contain any text, try another one.🆖")
-            st.error("Please upload another PDF. It seems like this PDF doesn't contain any text.")
-        except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
-
-
-
-if __name__ == '__main__':
-    main()
+if st.session_state.history and st.button("Clear conversation"):
+    st.session_state.history = []
+    st.rerun()
