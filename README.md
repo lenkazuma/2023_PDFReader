@@ -1,65 +1,78 @@
-# Langchain PDF & Word Reader
+# LangChain PDF & Word Reader
 
-The PDF & Word Reader is a project aimed at providing functionality to perform Summarisation and Retrieval QA on PDF and Word documents. This project is built using Streamlit, a popular Python library for creating web applications, and LangChain, a framework for developing applications powered by language models. It leverages the power of the OpenAI model to process and analyse the documents.
+Upload a PDF or Word document, get an instant summary, and chat with it. Answers are grounded in the document and cite the page numbers they came from. Built with Streamlit, LangChain and OpenAI chat models.
 
 ![Image](Screenshot.png)
 
-## Acknowledgment
-This project was inspired by the work of Alejandro AO and his langchain-ask-pdf project, which can be found at [[Alejandro AO's langchain-ask-pdf]](https://github.com/alejandro-ao/langchain-ask-pdf). Alejandro AO also created a tutorial on YouTube explaining the project, which you can watch at [his tutorial on YT](https://www.youtube.com/watch?v=wUAUdEw5oxM).
+## Features
 
-## Enhancements and Modifications
-In this project, I have made several customisations and improvements to the original functionality. These include:
-
-1. **Workaround for Max Token Limit**: I have devised a workaround to overcome the limitation imposed by the maximum token limit 4097. This workaround involves utilising map-reduce chain_type and RecursiveCharacterTextSplitter, allowing pre-summarisation in processing of larger documents.
-
-2. **Callback Token Used Count**: To optimise the usage of OpenAI's API, an expander that tracks callback tokens used during the QA process is added.
-
-4. **Error Handling**: Which doesn't really exist in the original repo.
-
-5. **Summary Prompt**: Generation of a concise summary of the extracted text whenever a file is uploaded. This can be useful for quickly grasping the main points of the document. Streamlit state session is added to avoide re-running the summary when qa is running.
-
+- **PDF and DOCX** – Word paragraphs and tables are both extracted.
+- **Automatic summary** – small documents are summarised in one call; long ones use a map-reduce pass so there is no context-length limit.
+- **Chat with your document** – multi-turn Q&A that remembers recent questions.
+- **Page citations** – every answer lists the source pages, with an expander showing the exact excerpts used.
+- **Indexed once per file** – embeddings are computed only when a new file (or chunk size) is uploaded, not on every question.
+- **Bring your own key** – enter your OpenAI API key in the sidebar, or configure it via secrets / environment variable.
+- **Model choice and tuning** – pick `gpt-4o-mini`, `gpt-4.1-mini` or `gpt-4o`, and adjust chunk size and number of excerpts.
+- **Token usage** – the sidebar shows chat tokens used this session.
+- Clear error for scanned PDFs that contain no selectable text.
 
 ## Installation
 
-To install and set up the PDF & Word Reader project, follow these steps:
+Requires Python 3.10+.
 
-1. Clone the repository:
+```bash
+git clone https://github.com/lenkazuma/PDFReader.git
+cd PDFReader
+pip install -r requirements.txt
+```
 
-- `git clone https://github.com/lenkazuma/PDFReader.git`
+## Configuration
 
-3. Navigate to the project directory:
+The OpenAI API key can be provided in any of these ways (first match wins):
 
-- `cd PDFReader`
+1. Typed into the sidebar (kept only in your browser session);
+2. `OPENAI_API_KEY` in `.streamlit/secrets.toml` (used by Streamlit Community Cloud);
+3. `OPENAI_API_KEY` environment variable or `.env` file.
 
-3. Install the required dependencies using pip:
+Get a key at <https://platform.openai.com/api-keys>. Never commit keys to the repository.
 
-- Install requirements : `pip install -r requirements.txt`
+## Usage
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Upload a file, read the summary, then ask questions in the chat box.
 
 ## Deployment
 
-The PDF & Word Reader application is deployed on Streamlit Cloud. You can access the deployed version at [PDFReader-LongChain](https://pdfreader-longchain.streamlit.app/). Please note that there is a misspelling in the URL, as "LangChain" is mistakenly written as "LongChain".
+A deployed version is available at [PDFReader-LongChain](https://pdfreader-longchain.streamlit.app/) (yes, "LangChain" is misspelt in the URL).
 
-If you want to deploy your own version of the application, follow these steps:
+To deploy your own on [Streamlit Community Cloud](https://streamlit.io/cloud), point it at `streamlit_app.py` and add `OPENAI_API_KEY` under **App settings → Secrets**, or leave it empty so each visitor enters their own key.
 
-1. Sign up for Streamlit at [https://streamlit.io](https://streamlit.io).
+## Project structure
 
-2. Configure your Streamlit application settings and navigate to the "APP Settings" section.
+```
+├── streamlit_app.py   # Streamlit UI
+├── reader_core.py     # parsing, chunking, indexing, Q&A and summarisation
+└── tests/             # pytest tests (no API key needed)
+```
 
-3. Add your OpenAI API key in the "Secrets" configuration. This will allow the application to utilize the OpenAI API for document processing.
+## Tests
 
-4. Once your settings are configured, you can deploy the application on Streamlit Cloud using the Streamlit command-line interface (CLI) or through the Streamlit web interface.
+```bash
+pip install pytest
+pytest -q
+```
 
-- Using the CLI:
-  ```
-  streamlit run your-app-name.py
-  ```
+## Acknowledgment
 
-- Using the web interface:
-  1. Log in to [https://streamlit.io](https://streamlit.io).
-  2. Navigate to your application's repository.
-  3. Click on the "Deploy" button and follow the instructions provided.
+Inspired by [Alejandro AO's langchain-ask-pdf](https://github.com/alejandro-ao/langchain-ask-pdf) and [his tutorial](https://www.youtube.com/watch?v=wUAUdEw5oxM).
 
-That's it! Your PDF & Word Reader application will be deployed and accessible via the provided URL.
+## Roadmap
 
-## Currently working on
-Add OCR image pdf text extraction for different languages.
+- OCR text extraction for scanned PDFs in different languages.
+
+## License
+
+[MIT](LICENSE)
